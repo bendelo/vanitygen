@@ -505,10 +505,11 @@ void
 vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 {
 	unsigned char key_buf[512], *pend;
+	unsigned char script_buf[2048];
 	char addr_buf[64], addr2_buf[64];
 	char privkey_buf[VG_PROTKEY_MAX_B58];
 	const char *keytype = "Privkey";
-	int len;
+	int len, script_len;
 	int isscript = (vcp->vc_format == VCF_SCRIPT);
 
 	EC_POINT *ppnt;
@@ -531,10 +532,20 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	vg_encode_address(ppnt,
 			  EC_KEY_get0_group(pkey),
 			  vcp->vc_pubkeytype, addr_buf);
-	if (isscript)
-		vg_encode_script_address(ppnt,
-					 EC_KEY_get0_group(pkey),
+	if (isscript) {
+		EC_POINT_point2oct(EC_KEY_get0_group(pkey), ppnt,
+		                   POINT_CONVERSION_UNCOMPRESSED,
+		                   vcp->vc_multisig,
+		                   65,
+		                   NULL);
+		script_len = vg_encode_multisig_script(
+						       vcp->vc_m_multisig,
+						       vcp->vc_n_multisig,
+						       vcp->vc_multisig,
+						       script_buf);
+		vg_encode_script_address(script_buf, script_len,
 					 vcp->vc_addrtype, addr2_buf);
+	}
 
 	if (vcp->vc_key_protect_pass) {
 		len = vg_protect_encode_privkey(privkey_buf,
@@ -574,8 +585,11 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
-		if (isscript)
+		if (isscript) {
+			printf("Script: ");
+			dumphex(script_buf, script_len);
 			printf("P2SHAddress: %s\n", addr2_buf);
+		}
 		printf("Address: %s\n"
 		       "%s: %s\n",
 		       addr_buf, keytype, privkey_buf);
@@ -591,8 +605,11 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			fprintf(fp,
 				"Pattern: %s\n"
 				, pattern);
-			if (isscript)
+			if (isscript) {
+				fprintf(fp, "Script: ");
+				fdumphex(fp, script_buf, script_len);
 				fprintf(fp, "P2SHAddress: %s\n", addr2_buf);
+			}
 			fprintf(fp,
 				"Address: %s\n"
 				"%s: %s\n",
@@ -1396,6 +1413,10 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 		case 111:
 			ats = "testnet";
 			bw = "\"m\" or \"n\"";
+			break;
+		case 196:
+			ats = "testnet script";
+			bw = "\"2M\" or \"2N\"";
 			break;
 		case 52:
 			ats = "namecoin";

@@ -66,7 +66,7 @@ fdumphex(FILE *fp, const unsigned char *src, size_t len)
 	for (i = 0; i < len; i++) {
 		fprintf(fp, "%02x", src[i]);
 	}
-	printf("\n");
+	fprintf(fp, "\n");
 }
 
 void
@@ -239,11 +239,9 @@ void
 vg_encode_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
 		  int addrtype, char *result)
 {
-	unsigned char eckey_buf[128], *pend;
+	unsigned char eckey_buf[128];
 	unsigned char binres[21] = {0,};
 	unsigned char hash1[32];
-
-	pend = eckey_buf;
 
 	EC_POINT_point2oct(pgroup,
 			   ppoint,
@@ -251,37 +249,52 @@ vg_encode_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
 			   eckey_buf,
 			   sizeof(eckey_buf),
 			   NULL);
-	pend = eckey_buf + 0x41;
+
 	binres[0] = addrtype;
-	SHA256(eckey_buf, pend - eckey_buf, hash1);
+	SHA256(eckey_buf, 65, hash1);
 	RIPEMD160(hash1, sizeof(hash1), &binres[1]);
 
 	vg_b58_encode_check(binres, sizeof(binres), result);
 }
 
+static int
+vg_compare_key(const void *key1, const void *key2) {
+	return memcmp(key1, key2, 66);
+}
+
+int
+vg_encode_multisig_script(const int m, const int n,
+			  const unsigned char *multisig,
+			  unsigned char *script_buf)
+{
+	int i=0;
+
+	script_buf[i++] = 0x50+m; // OP_<m>
+	int k; for (k=0; k<n; k++) {
+		script_buf[i++] = 0x41;  // pubkey length
+		memcpy(script_buf+i, multisig + 65*k, 65);
+		i+=65;
+	}
+	/* Sort public keys to match Armory Lockboxes */
+	if (n > 1) {
+		qsort(script_buf+1, n, 66, vg_compare_key);
+	}
+	script_buf[i++] = 0x50+n; // OP_<n>
+	script_buf[i++] = 0xae;   // OP_CHECKMULTISIG
+
+	return i;
+}
+
 void
-vg_encode_script_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
+vg_encode_script_address(const unsigned char *script_buf,
+			 const int script_len,
 			 int addrtype, char *result)
 {
-	unsigned char script_buf[69];
-	unsigned char *eckey_buf = script_buf + 2;
 	unsigned char binres[21] = {0,};
 	unsigned char hash1[32];
 
-	script_buf[ 0] = 0x51;  // OP_1
-	script_buf[ 1] = 0x41;  // pubkey length
-	// gap for pubkey
-	script_buf[67] = 0x51;  // OP_1
-	script_buf[68] = 0xae;  // OP_CHECKMULTISIG
-
-	EC_POINT_point2oct(pgroup,
-			   ppoint,
-			   POINT_CONVERSION_UNCOMPRESSED,
-			   eckey_buf,
-			   65,
-			   NULL);
 	binres[0] = addrtype;
-	SHA256(script_buf, 69, hash1);
+	SHA256(script_buf, script_len, hash1);
 	RIPEMD160(hash1, sizeof(hash1), &binres[1]);
 
 	vg_b58_encode_check(binres, sizeof(binres), result);

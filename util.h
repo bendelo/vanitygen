@@ -38,8 +38,11 @@ extern int vg_b58_decode_check(const char *input, void *buf, size_t len);
 
 extern void vg_encode_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
 			      int addrtype, char *result);
-extern void vg_encode_script_address(const EC_POINT *ppoint,
-				     const EC_GROUP *pgroup,
+extern int vg_encode_multisig_script(const int m, const int n,
+				     const unsigned char *multisig,
+				     unsigned char *script_buf);
+extern void vg_encode_script_address(const unsigned char *script_buf, 
+				     const int script_len,
 				     int addrtype, char *result);
 extern void vg_encode_privkey(const EC_KEY *pkey, int addrtype, char *result);
 extern int vg_set_privkey(const BIGNUM *bnpriv, EC_KEY *pkey);

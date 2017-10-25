@@ -42,12 +42,10 @@ const char *version = VANITYGEN_VERSION;
 void *
 vg_thread_loop(void *arg)
 {
-	unsigned char hash_buf[128];
-	unsigned char *eckey_buf;
+	unsigned char hash_buf[2048];
 	unsigned char hash1[32];
 
-	int i, c, len, output_interval;
-	int hash_len;
+	int i, c, hash_len, output_interval;
 
 	const BN_ULONG rekey_max = 10000000;
 	BN_ULONG npoints, rekey_at, nbatch;
@@ -102,20 +100,6 @@ vg_thread_loop(void *arg)
 	c = 0;
 	output_interval = 1000;
 	gettimeofday(&tvstart, NULL);
-
-	if (vcp->vc_format == VCF_SCRIPT) {
-		hash_buf[ 0] = 0x51;  // OP_1
-		hash_buf[ 1] = 0x41;  // pubkey length
-		// gap for pubkey
-		hash_buf[67] = 0x51;  // OP_1
-		hash_buf[68] = 0xae;  // OP_CHECKMULTISIG
-		eckey_buf = hash_buf + 2;
-		hash_len = 69;
-
-	} else {
-		eckey_buf = hash_buf;
-		hash_len = 65;
-	}
 
 	while (!vcp->vc_halt) {
 		if (++npoints >= rekey_at) {
@@ -192,14 +176,27 @@ vg_thread_loop(void *arg)
 		EC_POINTs_make_affine(pgroup, nbatch, ppnt, vxcp->vxc_bnctx);
 
 		for (i = 0; i < nbatch; i++, vxcp->vxc_delta++) {
-			/* Hash the public key */
-			len = EC_POINT_point2oct(pgroup, ppnt[i],
-						 POINT_CONVERSION_UNCOMPRESSED,
-						 eckey_buf,
-						 65,
-						 vxcp->vxc_bnctx);
-			assert(len == 65);
+			if (vcp->vc_format == VCF_SCRIPT) {
+				EC_POINT_point2oct(pgroup, ppnt[i],
+				                   POINT_CONVERSION_UNCOMPRESSED,
+				                   vcp->vc_multisig,
+				                   65,
+				                   vxcp->vxc_bnctx);
+				hash_len = vg_encode_multisig_script(
+								     vcp->vc_m_multisig,
+								     vcp->vc_n_multisig,
+								     vcp->vc_multisig,
+								     hash_buf);
+			} else {
+				hash_len = EC_POINT_point2oct(pgroup, ppnt[i],
+							      POINT_CONVERSION_UNCOMPRESSED,
+							      hash_buf,
+							      65,
+							      vxcp->vxc_bnctx);
+				assert(hash_len == 65);
+			}
 
+			/* Hash the public key or script */
 			SHA256(hash_buf, hash_len, hash1);
 			RIPEMD160(hash1, sizeof(hash1), &vxcp->vxc_binres[1]);
 
@@ -314,7 +311,8 @@ usage(const char *name)
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
-"-F <format>   Generate address with the given format (pubkey or script)\n"
+"-m <m>        Generate multisig address with <m> of n keys\n"
+"-M <pubkey>   Specify the other n-1 public keys for multisig address\n"
 "-P <pubkey>   Specify base public key for piecewise key generation\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
@@ -327,6 +325,7 @@ version, name);
 }
 
 #define MAX_FILE 4
+#define MAX_MULTISIG 20
 
 int
 main(int argc, char **argv)
@@ -353,6 +352,9 @@ main(int argc, char **argv)
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
 	EC_POINT *pubkey_base = NULL;
+	int m_multisig = 1;
+	int n_multisig = 1;
+	unsigned char multisig[65*MAX_MULTISIG];
 
 	FILE *pattfp[MAX_FILE], *fp;
 	int pattfpi[MAX_FILE];
@@ -361,7 +363,7 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqnrik1eE:P:m:M:NTX:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -399,16 +401,6 @@ main(int argc, char **argv)
 			privtype = 128 + addrtype;
 			scriptaddrtype = addrtype;
 			break;
-		case 'F':
-			if (!strcmp(optarg, "script"))
-				format = VCF_SCRIPT;
-			else
-			if (strcmp(optarg, "pubkey")) {
-				fprintf(stderr,
-					"Invalid format '%s'\n", optarg);
-				return 1;
-			}
-			break;
 		case 'P': {
 			if (pubkey_base != NULL) {
 				fprintf(stderr,
@@ -425,6 +417,39 @@ main(int argc, char **argv)
 					"Invalid base pubkey\n");
 				return 1;
 			}
+			break;
+		}
+		case 'm':
+			m_multisig = atoi(optarg);
+			if (m_multisig == 0) {
+				fprintf(stderr,
+					"Invalid multisig m '%s'\n", optarg);
+				return 1;
+			}
+			format = VCF_SCRIPT;
+			break;
+		case 'M': {
+			if (n_multisig >= MAX_MULTISIG) {
+				fprintf(stderr,
+					"Maximum number of multisig pubkeys exceeded\n");
+				return 1;
+			}
+			EC_KEY *pkey = vg_exec_context_new_key();
+			EC_POINT *pubkey = EC_POINT_hex2point(
+				EC_KEY_get0_group(pkey),
+				optarg, NULL, NULL);
+            EC_POINT_point2oct(EC_KEY_get0_group(pkey), pubkey,
+                               POINT_CONVERSION_UNCOMPRESSED,
+                               multisig + 65*n_multisig++,
+                               65,
+                               NULL);
+			EC_KEY_free(pkey);
+			if (pubkey == NULL) {
+				fprintf(stderr,
+					"Invalid multisig pubkey\n");
+				return 1;
+			}
+			format = VCF_SCRIPT;
 			break;
 		}
 			
@@ -514,6 +539,12 @@ main(int argc, char **argv)
 			return 1;
 		}
 		addrtype = scriptaddrtype;
+
+		if (n_multisig < m_multisig) {
+			fprintf(stderr,
+				"Not enough multisig pubkeys specified\n");
+			return 1;
+		}
 	}
 
 	if (seedfile) {
@@ -551,6 +582,9 @@ main(int argc, char **argv)
 	vcp->vc_format = format;
 	vcp->vc_pubkeytype = pubkeytype;
 	vcp->vc_pubkey_base = pubkey_base;
+	vcp->vc_m_multisig = m_multisig;
+	vcp->vc_n_multisig = n_multisig;
+	vcp->vc_multisig = multisig;
 
 	vcp->vc_output_match = vg_output_match_console;
 	vcp->vc_output_timing = vg_output_timing_console;

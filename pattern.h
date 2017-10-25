@@ -103,6 +103,9 @@ struct _vg_context_s {
 	enum vg_format		vc_format;
 	int			vc_pubkeytype;
 	EC_POINT		*vc_pubkey_base;
+	int			vc_m_multisig;
+	int			vc_n_multisig;
+	unsigned char	*vc_multisig;
 	int			vc_halt;
 
 	vg_exec_context_t	*vc_threads;
